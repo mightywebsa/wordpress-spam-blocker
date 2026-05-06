@@ -1,10 +1,17 @@
 <?php
 /*
-Plugin Name: Spam Blocker
+Plugin Name: Spam Account Blocker
 Description: Unified spam protection engine for registrations, logs, and IP blocking.
 Author: Mightyweb Pty Ltd
-Version: 1.5.1
+Version: 1.5.2
+License: GPL-3.0+
+Text Domain: spam-blocker
 */
+
+// Prevent direct access
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
 
 // ======================================================
 // 0. ACTIVATION HOOK — secure log directory
@@ -279,12 +286,12 @@ add_filter( 'tutor_user_register_validation_filter', function ( $errors, $data )
 
 add_action( 'admin_menu', function () {
     add_menu_page(
-        'Spam Blocker',
-        'Spam Blocker',
+        'Spam Account Blocker',
+        'Spam Account Blocker',
         'manage_options',
         'spam-blocker',
         'spam_block_admin_page',
-        'dashicons-shield-alt',
+        'dashicons-shield',
         80
     );
 } );
@@ -297,7 +304,7 @@ function spam_block_admin_page() {
 
     if ( ! current_user_can( 'manage_options' ) ) return;
 
-    echo '<div class="wrap"><h1>Spam Blocker v1.5</h1>';
+    echo '<div class="wrap"><h1>Spam Account Blocker v1.5.2</h1>';
 
     if (
         isset( $_GET['remove_ip'], $_GET['_wpnonce'] ) &&
