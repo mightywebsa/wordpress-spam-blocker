@@ -3,7 +3,7 @@
 Plugin Name: Spam Blocker
 Description: Unified spam protection engine for registrations, logs, and IP blocking.
 Author: Mightyweb Pty Ltd
-Version: 1.5
+Version: 1.5.1
 */
 
 // ======================================================
