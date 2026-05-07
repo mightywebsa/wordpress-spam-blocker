@@ -420,10 +420,7 @@ function spam_block_admin_page() {
                 . 'Remove</a></td>';
             echo '</tr>';
         }
-
         echo '</tbody></table>';
-    }
-    
-
+    }   
     echo '</div>'; // .wrap
 }
