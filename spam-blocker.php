@@ -423,6 +423,7 @@ function spam_block_admin_page() {
 
         echo '</tbody></table>';
     }
+    
 
     echo '</div>'; // .wrap
 }
