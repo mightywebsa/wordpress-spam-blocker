@@ -3,7 +3,7 @@
 Plugin Name: Spam Account Blocker
 Description: Unified spam protection engine for registrations, logs, and IP blocking.
 Author: Mightyweb Pty Ltd
-Version: 1.5.2
+Version: 1.5.3
 License: GPL-3.0+
 Text Domain: spam-blocker
 */
@@ -300,6 +300,172 @@ add_action( 'admin_menu', function () {
 // 5. ADMIN PAGE
 // ======================================================
 
+// ======================================================
+// BULK IP IMPORT HELPERS
+// ======================================================
+
+/**
+ * Process a collection of IP addresses and add valid,
+ * non-duplicate addresses to the blacklist.
+ *
+ * @param array $ips IP addresses to process.
+ * @return array Import statistics.
+ */
+function spam_block_process_bulk_ips( $ips ) {
+
+    $blacklist = array_values(
+        array_filter(
+            (array) get_option( 'spam_ip_blacklist', [] ),
+            'is_string'
+        )
+    );
+
+    $blacklist_lookup = array_fill_keys( $blacklist, true );
+
+    $stats = [
+        'processed'       => 0,
+        'added'           => 0,
+        'duplicates'      => 0,
+        'already_blocked' => 0,
+        'invalid'         => 0,
+        'invalid_ips'     => [],
+    ];
+
+    $imported_this_batch = [];
+
+    foreach ( $ips as $raw_ip ) {
+
+        $ip = trim( $raw_ip );
+
+        // Remove common CSV/text formatting.
+        $ip = trim( $ip, "\"' \t\n\r\0\x0B" );
+
+        if ( $ip === '' ) {
+            continue;
+        }
+
+        $stats['processed']++;
+
+        // Validate IPv4 or IPv6.
+        if ( ! filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+
+            $stats['invalid']++;
+
+            if ( count( $stats['invalid_ips'] ) < 100 ) {
+                $stats['invalid_ips'][] = $ip;
+            }
+
+            continue;
+        }
+
+        // Duplicate within the same import.
+        if ( isset( $imported_this_batch[ $ip ] ) ) {
+            $stats['duplicates']++;
+            continue;
+        }
+
+        $imported_this_batch[ $ip ] = true;
+
+        // Already exists in blacklist.
+        if ( isset( $blacklist_lookup[ $ip ] ) ) {
+            $stats['already_blocked']++;
+            continue;
+        }
+
+        // Add to blacklist.
+        $blacklist[] = $ip;
+        $blacklist_lookup[ $ip ] = true;
+
+        $stats['added']++;
+    }
+
+    // Only update the database if something was actually added.
+    if ( $stats['added'] > 0 ) {
+        update_option( 'spam_ip_blacklist', $blacklist );
+    }
+
+    return $stats;
+}
+
+
+/**
+ * Convert pasted text into individual IP addresses.
+ *
+ * Supports:
+ * - One IP per line
+ * - Comma separated
+ * - Tab separated
+ * - Spaces
+ * - Semicolon separated
+ */
+function spam_block_parse_pasted_ips( $text ) {
+
+    $text = wp_unslash( $text );
+
+    return preg_split(
+        '/[\s,;]+/',
+        $text,
+        -1,
+        PREG_SPLIT_NO_EMPTY
+    );
+}
+
+
+/**
+ * Read IP addresses from an uploaded CSV file.
+ *
+ * Every CSV cell is checked, allowing CSV files with:
+ *
+ * IP
+ * 192.168.1.1
+ * 8.8.8.8
+ *
+ * or CSV files containing multiple columns.
+ */
+function spam_block_parse_csv( $file ) {
+
+    $ips = [];
+
+    if ( ! is_readable( $file ) ) {
+        return $ips;
+    }
+
+    $handle = fopen( $file, 'r' );
+
+    if ( false === $handle ) {
+        return $ips;
+    }
+
+    while ( false !== ( $row = fgetcsv( $handle ) ) ) {
+
+        foreach ( $row as $value ) {
+
+            $value = trim( $value );
+
+            if ( $value === '' ) {
+                continue;
+            }
+
+            // Ignore common CSV header names.
+            $header = strtolower( trim( $value ) );
+
+            if ( in_array(
+                $header,
+                [ 'ip', 'ip address', 'ip_address', 'address', 'ipaddress' ],
+                true
+            ) ) {
+                continue;
+            }
+
+            $ips[] = $value;
+        }
+    }
+
+    fclose( $handle );
+
+    return $ips;
+}
+
 function spam_block_admin_page() {
 
     if ( ! current_user_can( 'manage_options' ) ) return;
@@ -358,6 +524,156 @@ function spam_block_admin_page() {
         }
     }
 
+    // ======================================================
+    // BULK IP IMPORT
+    // ======================================================
+
+    // --------------------------------------------------
+    // Paste bulk IPs
+    // --------------------------------------------------
+    if (
+        isset( $_POST['bulk_import_ips'] ) &&
+        isset( $_POST['_wpnonce_bulk_ips'] ) &&
+        wp_verify_nonce(
+            sanitize_text_field( wp_unslash( $_POST['_wpnonce_bulk_ips'] ) ),
+            'bulk_import_ips_nonce'
+        )
+    ) {
+
+        $raw_ips = $_POST['bulk_ips'] ?? '';
+
+        $ips = spam_block_parse_pasted_ips( $raw_ips );
+
+        $stats = spam_block_process_bulk_ips( $ips );
+
+        echo '<div class="notice notice-success is-dismissible">';
+        echo '<p><strong>Bulk IP import complete.</strong></p>';
+        echo '<ul style="margin-left:20px;">';
+
+        echo '<li>Processed: <strong>' . esc_html( $stats['processed'] ) . '</strong></li>';
+        echo '<li>Added: <strong>' . esc_html( $stats['added'] ) . '</strong></li>';
+        echo '<li>Already blacklisted: <strong>' . esc_html( $stats['already_blocked'] ) . '</strong></li>';
+        echo '<li>Duplicates in import: <strong>' . esc_html( $stats['duplicates'] ) . '</strong></li>';
+        echo '<li>Invalid IPs: <strong>' . esc_html( $stats['invalid'] ) . '</strong></li>';
+
+        echo '</ul>';
+        echo '</div>';
+
+        if ( ! empty( $stats['invalid_ips'] ) ) {
+
+            echo '<div class="notice notice-warning">';
+            echo '<p><strong>Invalid IP addresses:</strong></p>';
+            echo '<textarea readonly style="width:100%;height:100px;font-family:monospace;">'
+                . esc_textarea( implode( "\n", $stats['invalid_ips'] ) )
+                . '</textarea>';
+
+            if ( $stats['invalid'] > 100 ) {
+                echo '<p>Only the first 100 invalid addresses are displayed.</p>';
+            }
+
+            echo '</div>';
+        }
+    }
+
+
+    // --------------------------------------------------
+    // CSV upload
+    // --------------------------------------------------
+    if (
+        isset( $_POST['bulk_import_csv'] ) &&
+        isset( $_POST['_wpnonce_bulk_csv'] ) &&
+        wp_verify_nonce(
+            sanitize_text_field( wp_unslash( $_POST['_wpnonce_bulk_csv'] ) ),
+            'bulk_import_csv_nonce'
+        )
+    ) {
+
+        $stats = [
+            'processed'       => 0,
+            'added'           => 0,
+            'duplicates'      => 0,
+            'already_blocked' => 0,
+            'invalid'         => 0,
+            'invalid_ips'     => [],
+        ];
+
+        if (
+            ! isset( $_FILES['spam_csv'] ) ||
+            empty( $_FILES['spam_csv']['tmp_name'] )
+        ) {
+
+            echo '<div class="notice notice-error">';
+            echo '<p>Please select a CSV file to upload.</p>';
+            echo '</div>';
+
+        } else {
+
+            $file = $_FILES['spam_csv'];
+
+            // Maximum upload size: 10 MB.
+            if ( $file['size'] > 10 * MB_IN_BYTES ) {
+
+                echo '<div class="notice notice-error">';
+                echo '<p>The CSV file is too large. Maximum size is 10 MB.</p>';
+                echo '</div>';
+
+            } elseif ( UPLOAD_ERR_OK !== (int) $file['error'] ) {
+
+                echo '<div class="notice notice-error">';
+                echo '<p>There was a problem uploading the CSV file.</p>';
+                echo '</div>';
+
+            } else {
+
+                $extension = strtolower(
+                    pathinfo( $file['name'], PATHINFO_EXTENSION )
+                );
+
+                if ( 'csv' !== $extension ) {
+
+                    echo '<div class="notice notice-error">';
+                    echo '<p>Only CSV files are supported.</p>';
+                    echo '</div>';
+
+                } else {
+
+                    $ips = spam_block_parse_csv( $file['tmp_name'] );
+
+                    $stats = spam_block_process_bulk_ips( $ips );
+
+                    echo '<div class="notice notice-success is-dismissible">';
+                    echo '<p><strong>CSV import complete.</strong></p>';
+                    echo '<ul style="margin-left:20px;">';
+
+                    echo '<li>Processed: <strong>' . esc_html( $stats['processed'] ) . '</strong></li>';
+                    echo '<li>Added: <strong>' . esc_html( $stats['added'] ) . '</strong></li>';
+                    echo '<li>Already blacklisted: <strong>' . esc_html( $stats['already_blocked'] ) . '</strong></li>';
+                    echo '<li>Duplicates in import: <strong>' . esc_html( $stats['duplicates'] ) . '</strong></li>';
+                    echo '<li>Invalid IPs: <strong>' . esc_html( $stats['invalid'] ) . '</strong></li>';
+
+                    echo '</ul>';
+                    echo '</div>';
+
+                    if ( ! empty( $stats['invalid_ips'] ) ) {
+
+                        echo '<div class="notice notice-warning">';
+                        echo '<p><strong>Invalid IP addresses:</strong></p>';
+
+                        echo '<textarea readonly style="width:100%;height:100px;font-family:monospace;">'
+                            . esc_textarea( implode( "\n", $stats['invalid_ips'] ) )
+                            . '</textarea>';
+
+                        if ( $stats['invalid'] > 100 ) {
+                            echo '<p>Only the first 100 invalid addresses are displayed.</p>';
+                        }
+
+                        echo '</div>';
+                    }
+                }
+            }
+        }
+    }
+
     // --------------------------------------------------
     // FETCH current data
     // --------------------------------------------------
@@ -390,6 +706,119 @@ function spam_block_admin_page() {
     echo '<input type="text" name="new_ip" placeholder="e.g. 192.168.1.100" style="width:220px;" />';
     echo ' <button class="button" name="add_ip">Add IP Manually</button>';
     echo '</form>';
+
+    // --------------------------------------------------
+    // BULK IP IMPORT
+    // --------------------------------------------------
+
+    echo '<div style="
+        background:#fff;
+        border:1px solid #ccd0d4;
+        padding:20px;
+        margin:20px 0;
+        max-width:900px;
+    ">';
+
+    echo '<h3 style="margin-top:0;">Bulk Import IP Addresses</h3>';
+
+    echo '<p>';
+    echo 'Add multiple IPv4 or IPv6 addresses at once. ';
+    echo 'Existing blacklisted IPs and duplicates will automatically be skipped.';
+    echo '</p>';
+
+
+    // --------------------------------------------------
+    // Paste IPs
+    // --------------------------------------------------
+
+    echo '<h4>Paste IP Addresses</h4>';
+
+    echo '<form method="post">';
+
+    wp_nonce_field(
+        'bulk_import_ips_nonce',
+        '_wpnonce_bulk_ips'
+    );
+
+    echo '<textarea
+        name="bulk_ips"
+        rows="10"
+        style="
+            width:100%;
+            max-width:800px;
+            font-family:monospace;
+            font-size:13px;
+        "
+        placeholder="192.168.1.10
+    192.168.1.20
+    8.8.8.8
+    2001:4860:4860::8888
+    2001:db8::1
+    "></textarea>';
+
+    echo '<p class="description">';
+    echo 'One IP per line, or separate addresses with commas, spaces, tabs or semicolons.';
+    echo '</p>';
+
+    echo '<p>';
+    echo '<button
+        type="submit"
+        name="bulk_import_ips"
+        class="button button-primary"
+    >';
+    echo 'Import IP Addresses';
+    echo '</button>';
+    echo '</p>';
+
+    echo '</form>';
+
+
+    // --------------------------------------------------
+    // CSV Upload
+    // --------------------------------------------------
+
+    echo '<hr>';
+
+    echo '<h4>Upload CSV File</h4>';
+
+    echo '<p>';
+    echo 'Upload a CSV file containing IP addresses. ';
+    echo 'Excel files (.xlsx) are not supported in this version.';
+    echo '</p>';
+
+    echo '<form
+        method="post"
+        enctype="multipart/form-data"
+    >';
+
+    wp_nonce_field(
+        'bulk_import_csv_nonce',
+        '_wpnonce_bulk_csv'
+    );
+
+    echo '<input
+        type="file"
+        name="spam_csv"
+        accept=".csv,text/csv"
+    >';
+
+    echo '<p class="description">';
+    echo 'Maximum file size: 10 MB. IPv4 and IPv6 are supported.';
+    echo '</p>';
+
+    echo '<p>';
+    echo '<button
+        type="submit"
+        name="bulk_import_csv"
+        class="button"
+    >';
+    echo 'Import CSV';
+    echo '</button>';
+    echo '</p>';
+
+    echo '</form>';
+
+    echo '</div>';
 
     if ( empty( $blacklist ) ) {
         echo '<p>No IPs currently blocked.</p>';
