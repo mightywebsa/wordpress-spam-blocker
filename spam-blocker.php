@@ -470,7 +470,7 @@ function spam_block_admin_page() {
 
     if ( ! current_user_can( 'manage_options' ) ) return;
 
-    echo '<div class="wrap"><h1>Spam Account Blocker v1.5.2</h1>';
+    echo '<div class="wrap"><h1>Spam Account Blocker</h1>';
 
     if (
         isset( $_GET['remove_ip'], $_GET['_wpnonce'] ) &&
